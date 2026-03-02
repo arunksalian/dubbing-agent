@@ -1,0 +1,96 @@
+version: "3.9"
+
+# =============================================================================
+# AI Video Dubbing — Docker Compose
+# Services: API server · Redis · MinIO (S3-compatible)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # FastAPI application
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dubbing-agent:latest
+    container_name: dubbing-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-dubbing-output}
+      S3_REGION: us-east-1
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      HF_TOKEN: ${HF_TOKEN}
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-medium}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      UPLOAD_DIR: /tmp/dubbing/uploads
+      OUTPUT_DIR: /tmp/dubbing/outputs
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - dubbing_tmp:/tmp/dubbing
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Redis — job state store
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: dubbing-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: dubbing-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"    # S3 API
+      - "9001:9001"    # Web console
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:
+  minio_data:
+  dubbing_tmp:
